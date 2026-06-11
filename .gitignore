@@ -1,0 +1,8 @@
+# .gitignore
+build/
+data/
+__pycache__/
+*.so
+*.dylib
+.DS_Store
+*.egg-info/
