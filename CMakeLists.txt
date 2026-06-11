@@ -5,7 +5,12 @@ project(HopfNetMHD)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find PyBind11, Eigen3, and Python
+# CRUCIAL Apple Silicon Fix: Append the Homebrew path to CMake's search list
+if(APPLE)
+    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
+endif()
+
+# Find PyBind11, Eigen3, and Python components
 find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
