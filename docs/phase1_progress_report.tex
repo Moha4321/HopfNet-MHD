@@ -1,0 +1,496 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amsthm, amssymb, amsfonts}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{bm}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+
+\geometry{margin=1in}
+
+\newcommand{\pderiv}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\curl}{\nabla \times}
+\renewcommand{\div}{\nabla \cdot}
+
+\lstdefinestyle{code}{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    columns=fullflexible,
+    frame=single,
+    backgroundcolor=\color{gray!8}
+}
+
+\title{\textbf{HopfNet-MHD: Phase 1 Progress Report} \\
+\large Milestones 1--4 --- Spectral Infrastructure, Gauge Projection, \\
+Hopf Link Initialization, and the Nonlinear RHS Pipeline}
+\author{Mohana Rangan Desigan}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents the implementation and validation of the first four
+milestones of the HopfNet-MHD Phase 1 engine: a $128^3$ pseudo-spectral
+incompressible Hall-magnetohydrodynamics (Hall-MHD) solver targeting Apple
+Silicon (M4, 16\,GB unified memory). We report on (1) the spectral grid,
+wavevector arrays, real-to-complex FFT wrappers, and Orszag $2/3$
+dealiasing mask; (2) the Coulomb-gauge orthogonal projection tensor
+$\mathcal{P}(\mathbf{k})$ and the spectral curl operator; (3) the
+regularized Biot--Savart construction of the magnetic Hopf link initial
+condition; and (4) the fully dealiased, gauge-consistent nonlinear
+right-hand-side (RHS) pipeline for both the induction equation and an
+incompressible Navier--Stokes velocity field, coupled through the Lorentz
+force $\mathbf{J}\times\mathbf{B}$. Each milestone is accompanied by a
+battery of unit tests verifying the relevant analytic identities to
+machine precision on an $N=8$ test grid. All derivations reference the
+governing equations established in the companion document
+\emph{Mathematical Foundations of the HopfNet-MHD Engine}
+\citep{foundation2026}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Architecture Overview}
+\label{sec:architecture}
+
+The engine follows a hybrid C++/Python architecture, chosen to balance
+numerical performance against development velocity on a single
+16\,GB Apple Silicon workstation.
+
+\begin{itemize}
+    \item \textbf{C++ core} (\texttt{src/}, compiled via CMake +
+    pybind11 into the extension module \texttt{hopfnet\_cpp}): owns the
+    performance- and precision-critical primitives --- the spectral grid,
+    the FFTW3-backed 3D real-to-complex transform pair, the Coulomb gauge
+    projection tensor, the spectral curl operator, and the regularized
+    Biot--Savart Hopf link initializer.
+    \item \textbf{Python orchestration layer}
+    (\texttt{python/hopfnet/rhs.py}): assembles the nonlinear RHS for both
+    evolved fields ($\mathbf{A}$ and $\mathbf{v}$) by composing the C++
+    primitives. Every floating-point-heavy operation (FFTs, projections,
+    curls) executes inside compiled code; the Python layer performs only
+    array bookkeeping via NumPy, which itself dispatches to C.
+    \item \textbf{Test suite} (\texttt{tests/}): one file per milestone,
+    run with \texttt{pytest}, executed on a small $N=8$ grid where
+    analytic ground truth is tractable by hand.
+\end{itemize}
+
+This split keeps the stiff time-integration loop (Milestone 5--6) free to
+be implemented entirely in C++ once the underlying operators are validated,
+while allowing the nonlinear-term bookkeeping to be developed and debugged
+interactively in Python first.
+
+\section{Milestone 1: Spectral Grid and FFT Infrastructure}
+\label{sec:milestone1}
+
+\subsection{Mathematical Basis}
+
+The pseudo-spectral method represents all fields as truncated Fourier
+series (Sec.~2.1 of \citealp{foundation2026}, Eq.~10),
+\begin{equation}
+    \mathbf{A}(\mathbf{x}, t) = \sum_{\mathbf{k}} \hat{\mathbf{A}}(\mathbf{k}, t)
+    e^{i \mathbf{k} \cdot \mathbf{x}},
+\end{equation}
+on a triply periodic domain of side $L = 2\pi$. For a real-valued field
+sampled on $N^3$ points, the discrete wavevector components take the
+standard FFT ordering $n \in \{0, 1, \dots, N/2, -(N/2-1), \dots, -1\}$,
+with $k_i = (2\pi/L)\, n_i$.
+
+\subsection{Implementation}
+
+\texttt{src/spectral\_grid.hpp} implements the class \texttt{SpectralGrid},
+which precomputes and stores:
+\begin{itemize}
+    \item 1D wavenumber arrays $k_x, k_y \in \mathbb{R}^N$ and
+    $k_z \in \mathbb{R}^{N/2+1}$ (the last axis is truncated under the
+    real-to-complex, or rFFT, layout, exploiting the Hermitian symmetry
+    $\hat{\mathbf{A}}(-\mathbf{k}) = \hat{\mathbf{A}}^*(\mathbf{k})$ of a
+    real field --- Sec.~2.4/\S\ref{sec:milestone2} of
+    \citealp{foundation2026});
+    \item the flattened array $|\mathbf{k}|^2 \in \mathbb{R}^{N \times N
+    \times (N/2+1)}$;
+    \item the Orszag $2/3$ dealiasing mask: a binary array that is $1$
+    where $|n_x|, |n_y|, |n_z| \le \lfloor (2/3)(N/2) \rfloor$ and $0$
+    otherwise.
+\end{itemize}
+
+\texttt{src/fft3d.hpp} implements \texttt{FFT3D}, a thin RAII wrapper
+around a single pair of FFTW3 \texttt{r2c}/\texttt{c2r} plans created with
+\texttt{FFTW\_MEASURE}. The forward transform returns the unnormalized
+FFTW output; the inverse transform divides by $N^3$, so that
+\texttt{inverse(forward(f))} $= f$ to machine precision. Both methods are
+exposed to Python via pybind11 with NumPy array marshalling.
+
+\subsection{Validation}
+
+Six unit tests in \texttt{tests/test\_milestone1.py} establish:
+\begin{enumerate}
+    \item \textbf{Round-trip accuracy}: for a random field and for a
+    constant field, \texttt{inverse(forward(f))} reproduces $f$ to
+    $10^{-12}$.
+    \item \textbf{Normalization}: a constant field $f \equiv 3.7$
+    transforms to a single nonzero coefficient at $\mathbf{k}=0$ equal to
+    $3.7 N^3$, confirming the $1/N^3$ inverse normalization.
+    \item \textbf{Single-mode spectral purity}: $\cos(x)$ (integer
+    wavenumber $n_x = \pm 1$) places $>99\%$ of its spectral energy at the
+    expected indices $1$ and $N-1$.
+    \item \textbf{Wavevector correctness}: for $N=8$, the computed $k_x,
+    k_y, k_z$ arrays match the hand-derived FFT ordering
+    $\{0,1,2,3,4,-3,-2,-1\} \times (2\pi/L)$ and $\{0,1,2,3,4\}\times
+    (2\pi/L)$ respectively.
+    \item \textbf{$|\mathbf{k}|^2$ consistency}: spot-checked against
+    direct reconstruction from $k_x, k_y, k_z$.
+    \item \textbf{Dealias mask correctness}: for $N=8$ the cutoff is
+    $\lfloor (2/3)\cdot 4\rfloor = 2$; modes with $|n|\le 2$ are retained,
+    $|n|\ge 3$ (including the Nyquist mode) are removed, and the mask is
+    symmetric under $n \to -n$.
+\end{enumerate}
+All six tests pass.
+
+\section{Milestone 2: Coulomb Gauge Projection and Spectral Curl}
+\label{sec:milestone2}
+
+\subsection{Mathematical Basis}
+
+As derived in Sec.~2.3 of \citealp{foundation2026}, enforcing
+$\div\mathbf{A}=0$ for all time reduces, in Fourier space, to applying the
+orthogonal projection tensor
+\begin{equation}
+    \mathcal{P}_{ij}(\mathbf{k}) = \delta_{ij} - \frac{k_i k_j}{|\mathbf{k}|^2},
+    \qquad
+    \pderiv{\hat{\mathbf{A}}}{t} = \mathcal{P}(\mathbf{k})\,\hat{\mathbf{R}}.
+    \label{eq:projection}
+\end{equation}
+At $\mathbf{k}=0$ this expression is $0/0$; following Sec.~2.3's
+resolution, $\mathcal{P}(\mathbf{0}) \equiv \mathbb{I}$, since the
+spatially uniform mean field trivially satisfies the gauge condition.
+
+The spectral curl follows from $\nabla \to i\mathbf{k}$ in Fourier space:
+\begin{equation}
+    \hat{\mathbf{B}} = i\,\mathbf{k} \times \hat{\mathbf{A}},
+    \qquad
+    B_x = i(k_y A_z - k_z A_y),\quad
+    B_y = i(k_z A_x - k_x A_z),\quad
+    B_z = i(k_x A_y - k_y A_x).
+    \label{eq:curl}
+\end{equation}
+
+\subsection{Implementation}
+
+\texttt{src/projection.hpp} implements:
+\begin{itemize}
+    \item \texttt{project\_field(grid, Ax, Ay, Az)}: applies
+    Eq.~\eqref{eq:projection} in place, with an explicit early-exit at
+    $\mathbf{k}=0$ (identified by $|\mathbf{k}|^2 < 10^{-14}$) implementing
+    $\mathcal{P}(\mathbf{0})=\mathbb{I}$.
+    \item \texttt{spectral\_curl(grid, Ax, Ay, Az, Bx, By, Bz)}: implements
+    Eq.~\eqref{eq:curl} component-wise, using the identity
+    $i(a+ib) = -b + ia$ for the multiplication by $i$.
+\end{itemize}
+Both operate on \texttt{std::vector<std::complex<double>>} buffers of
+length $N \times N \times (N/2+1)$ and are exposed to Python returning
+NumPy \texttt{complex128} arrays of shape $(N,N,N/2+1)$.
+
+\subsection{Validation}
+
+Five unit tests in \texttt{tests/test\_milestone2.py}:
+\begin{enumerate}
+    \item \textbf{Gauge enforcement}: for a random complex vector field
+    $\hat{\mathbf{R}}$, $\mathbf{k}\cdot\mathcal{P}(\mathbf{k})\hat{\mathbf{R}}
+    = 0$ to $10^{-12}$ for every $\mathbf{k}\ne 0$.
+    \item \textbf{Idempotence}: $\mathcal{P}(\mathcal{P}(\hat{\mathbf{R}}))
+    = \mathcal{P}(\hat{\mathbf{R}})$, confirming $\mathcal{P}^2=\mathcal{P}$
+    as required of a projection operator.
+    \item \textbf{$\mathbf{k}=0$ identity}: the $\mathbf{k}=0$ mode of
+    $\hat{\mathbf{R}}$ is passed through unchanged.
+    \item \textbf{Curl correctness}: for the analytic field
+    $\mathbf{A}=(0,0,\sin x)$, the spectral curl (via forward FFT $\to$
+    \texttt{spectral\_curl} $\to$ inverse FFT) reproduces
+    $\mathbf{B}=(0,-\cos x,0)$ to $10^{-12}$.
+    \item \textbf{Automatic solenoidality}: for a random field, the curl
+    output satisfies $\mathbf{k}\cdot\hat{\mathbf{B}}=0$ to $10^{-10}$,
+    confirming $\div(\curl\mathbf{A})\equiv 0$ holds at the discrete level.
+\end{enumerate}
+All five tests pass.
+
+\section{Milestone 3: Magnetic Hopf Link Initial Condition}
+\label{sec:milestone3}
+
+\subsection{Mathematical Basis}
+
+The initial vector potential is constructed from two regularized
+Biot--Savart current loops (Sec.~3 of \citealp{foundation2026}): Ring 1 in
+the $xy$-plane centered at $(0,d,0)$, Ring 2 in the $yz$-plane centered at
+$(0,-d,0)$, both of radius $R$. The infinite-wire singularity in the
+Biot--Savart kernel is regularized by a finite core radius $a$
+(Eq.~21),
+\begin{equation}
+    \mathbf{A}_{\mathrm{reg}}(\mathbf{r}) = \frac{\mu_0 I}{4\pi}
+    \oint_C \frac{d\mathbf{l}'}{\sqrt{|\mathbf{r}-\mathbf{r}'|^2 + a^2}},
+\end{equation}
+giving the explicit component integrals of Eqs.~26--28, each a smooth
+$2\pi$-periodic integral over the loop parameter.
+
+\subsection{Implementation}
+
+\texttt{src/hopf\_link.hpp} implements \texttt{hopf\_link::compute}, which:
+\begin{itemize}
+    \item evaluates each of the three component integrals (Eqs.~26--28)
+    at every grid point using composite Simpson's rule on $[0,2\pi]$ with
+    an even number of subintervals \texttt{n\_quad};
+    \item places the grid on the centered domain
+    $x_i = -L/2 + i\,(L/N)$, so the two interlocking rings sit
+    symmetrically about the box center;
+    \item returns three real $N\times N\times N$ arrays
+    $(A_x, A_y, A_z)$.
+\end{itemize}
+The Coulomb-gauge projection (Milestone 2) is applied \emph{after}
+construction, by transforming to Fourier space, calling
+\texttt{project\_field}, and (if needed) transforming back ---
+exactly as prescribed in Sec.~3.4 of \citealp{foundation2026}.
+
+\subsection{Validation}
+
+Four unit tests in \texttt{tests/test\_milestone3.py} (run at $N=8$,
+$R=1$, $d=0.3$, $a=0.2$):
+\begin{enumerate}
+    \item \textbf{Finiteness and non-triviality}: all three components are
+    finite everywhere (no NaN/Inf from the regularized $1/D$ kernels) and
+    are not identically zero.
+    \item \textbf{Quadrature convergence}: the maximum pointwise change in
+    $A_x$ when doubling \texttt{n\_quad} from $64$ to $128$ is more than a
+    factor of $2$ smaller than the change from $32$ to $64$ (Richardson-type
+    convergence), and the $64\to128$ change is below $10^{-3}$ relative to
+    the field's own magnitude --- consistent with Simpson's rule on a
+    smooth, regularized integrand.
+    \item \textbf{Coulomb gauge after projection}: after FFT $\to$
+    \texttt{project\_field}, $\mathbf{k}\cdot\hat{\mathbf{A}} = 0$ to
+    $10^{-12}$ for all $\mathbf{k}\ne 0$, exactly as required for the
+    initial state to satisfy $\div\mathbf{A}=0$ to machine precision.
+    \item \textbf{Physical content}: the resulting field
+    $\mathbf{B}=\curl\mathbf{A}$ carries nonzero magnetic energy
+    $\sum |\hat{\mathbf{B}}|^2 > 0$ (the Hopf link is not a trivial/null
+    configuration) and is itself solenoidal,
+    $\mathbf{k}\cdot\hat{\mathbf{B}}=0$ to $10^{-10}$.
+\end{enumerate}
+All four tests pass.
+
+\subsection{Note on the $128^3$ Production Run}
+
+The quadrature is $\mathcal{O}(N^3 \cdot n_{\mathrm{quad}})$. At $N=128$
+with $n_{\mathrm{quad}}=64$, this is approximately $1.3\times 10^8$
+evaluations of the regularized kernel per Cartesian component --- a
+one-time initialization cost expected to take on the order of tens of
+seconds on the M4, well within the 16\,GB memory budget
+($\sim 260$\,MB per field).
+
+\section{Milestone 4: The Nonlinear RHS Pipeline}
+\label{sec:milestone4}
+
+This milestone implements the right-hand side of both evolved equations
+prior to the ETD split (Milestone 5). Two physical fields are evolved:
+the vector potential $\mathbf{A}$ (Hall-MHD induction, Eq.~8) and an
+incompressible velocity field $\mathbf{v}$ (momentum balance), coupled
+through the Lorentz force $\mathbf{J}\times\mathbf{B}$.
+
+\subsection{Mathematical Basis}
+
+\paragraph{Induction RHS.} From Eq.~12 of \citealp{foundation2026}, the
+raw forcing for $\mathbf{A}$ is
+\begin{equation}
+    \mathbf{R}_A = \mathbf{v}\times\mathbf{B}
+    - \frac{d_i}{\rho}(\mathbf{J}\times\mathbf{B}) - \eta\mathbf{J},
+    \label{eq:RA}
+\end{equation}
+which, after dealiasing, is projected via Eq.~\eqref{eq:projection} to
+remove its longitudinal component, preserving $\div\mathbf{A}=0$.
+
+\paragraph{Momentum RHS.} For an incompressible velocity field, the
+nonlinear momentum forcing (advection plus Lorentz force, with the
+pressure gradient eliminated by the same projection mechanism that
+enforces $\div\mathbf{v}=0$) is
+\begin{equation}
+    \mathbf{R}_v = -(\mathbf{v}\cdot\nabla)\mathbf{v}
+    + \frac{1}{\rho}(\mathbf{J}\times\mathbf{B}).
+    \label{eq:Rv}
+\end{equation}
+The structural identity between Eqs.~\eqref{eq:RA} and \eqref{eq:Rv} ---
+both are projected by the \emph{same} tensor $\mathcal{P}(\mathbf{k})$,
+once enforcing the Coulomb gauge and once enforcing incompressibility ---
+is a direct consequence of the fact that both constraints are statements
+that a vector field's Fourier coefficients be transverse to $\mathbf{k}$
+(Sec.~2.1 of \citealp{foundation2026}).
+
+\paragraph{Dealiasing.} Each nonlinear product (the cross products
+$\mathbf{v}\times\mathbf{B}$, $\mathbf{J}\times\mathbf{B}$, and the
+advection term $(\mathbf{v}\cdot\nabla)\mathbf{v}$) is computed in real
+space, transformed to Fourier space, and then masked by the Orszag $2/3$
+dealiasing mask (Milestone 1) before being projected. This follows
+Sec.~2's discussion: a quadratic nonlinearity convolves modes $k_1, k_2$
+into $k_1+k_2$, which can exceed $k_{\max}$ and alias back into the
+resolved spectrum unless removed.
+
+\subsection{Implementation}
+
+\texttt{python/hopfnet/rhs.py} implements:
+\begin{itemize}
+    \item \texttt{spectral\_derivative(grid, field\_hat, axis)}:
+    $\partial_{x_{\mathrm{axis}}} \to i k_{\mathrm{axis}}$, used for the
+    nine partial derivatives $\partial v_i/\partial x_j$ in the advection
+    term;
+    \item \texttt{compute\_B\_and\_J(grid, A\_hat)}: two applications of
+    \texttt{spectral\_curl} (Milestone 2) give
+    $\hat{\mathbf{B}}=\curl\hat{\mathbf{A}}$ and
+    $\hat{\mathbf{J}}=\curl\hat{\mathbf{B}}$;
+    \item \texttt{compute\_advection(grid, fft, v\_hat)}: computes
+    $(\mathbf{v}\cdot\nabla)\mathbf{v}$ by transforming $\mathbf{v}$ and
+    each $\partial v_i/\partial x_j$ to real space, forming the
+    real-space sum $\sum_j v_j\,\partial v_i/\partial x_j$, transforming
+    back, and applying the dealias mask;
+    \item \texttt{cross\_real(a, b)}: elementwise real-space cross
+    product, used for both $\mathbf{v}\times\mathbf{B}$ and
+    $\mathbf{J}\times\mathbf{B}$;
+    \item \texttt{compute\_R\_A} and \texttt{compute\_R\_v}: assemble
+    Eqs.~\eqref{eq:RA} and \eqref{eq:Rv} respectively, each dealiasing
+    every nonlinear product before the final call to
+    \texttt{project\_field}.
+\end{itemize}
+
+This module is implemented in Python, but every floating-point-intensive
+step --- the FFTs, the curls, and the projection --- is a call into the
+compiled \texttt{hopfnet\_cpp} extension; the Python layer performs only
+NumPy array arithmetic on already-transformed buffers.
+
+\subsection{Validation}
+
+Six unit tests in \texttt{tests/test\_milestone4.py}:
+\begin{enumerate}
+    \item \textbf{Spectral derivative}: $\partial_x \cos(x) = -\sin(x)$
+    reproduced to $10^{-12}$ via \texttt{spectral\_derivative} followed by
+    inverse FFT.
+    \item \textbf{Dealiasing mechanism, demonstrated end-to-end}: the
+    product $\cos(3x)\cos(2x) = \tfrac{1}{2}[\cos(5x)+\cos(x)]$ on an
+    $N=8$ grid generates an aliased mode at integer wavenumber $n=-3$
+    (from $5 \to 5-8$), which lies outside the $2/3$ cutoff
+    ($\lfloor(2/3)\cdot 4\rfloor=2$). Before masking this mode is
+    populated ($|\hat{f}|>10^{-6}$); after masking it is \emph{exactly}
+    zero, while the surviving mode ($n=1$) is untouched.
+    \item \textbf{Advection}: for $\mathbf{v}=(\sin x, 0, 0)$,
+    $(\mathbf{v}\cdot\nabla)\mathbf{v} = (\tfrac{1}{2}\sin 2x, 0, 0)$,
+    reproduced to $10^{-12}$.
+    \item \textbf{Lorentz force chain}: for $\mathbf{A}=(0,0,\sin x)$
+    (giving $\mathbf{B}=(0,-\cos x,0)$ and, by a second curl,
+    $\mathbf{J}=(0,0,\sin x)$), the cross product
+    $\mathbf{J}\times\mathbf{B} = (\tfrac{1}{2}\sin 2x, 0, 0)$ is
+    reproduced to $10^{-12}$, validating the full curl
+    $\to$ curl $\to$ cross-product chain.
+    \item \textbf{$\mathbf{R}_A$ gauge consistency}: for random
+    divergence-free $\hat{\mathbf{A}}, \hat{\mathbf{v}}$,
+    $\mathbf{k}\cdot\hat{\mathbf{R}}_A = 0$ to $10^{-10}$.
+    \item \textbf{$\mathbf{R}_v$ incompressibility consistency}: likewise,
+    $\mathbf{k}\cdot\hat{\mathbf{R}}_v = 0$ to $10^{-10}$.
+\end{enumerate}
+All six tests pass.
+
+\section{Summary of Test Coverage}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llc@{}}
+\toprule
+Milestone & Component & Tests \\
+\midrule
+1 & Spectral grid, FFT, dealias mask & 6 \\
+2 & Coulomb gauge projection, spectral curl & 5 \\
+3 & Hopf link Biot--Savart initialization & 4 \\
+4 & Nonlinear RHS pipeline ($\mathbf{R}_A$, $\mathbf{R}_v$) & 6 \\
+\midrule
+\textbf{Total} & & \textbf{21} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All 21 tests pass on $N=8$ test grids, exercising every operator that will
+appear in the $128^3$ production loop: FFT round-trip and normalization,
+the Coulomb-gauge projection tensor and its idempotence and $\mathbf{k}=0$
+behavior, the spectral curl and its automatic solenoidality, the
+regularized Biot--Savart initial condition and its convergence and gauge
+consistency, and the fully dealiased, doubly-projected nonlinear RHS for
+both the magnetic and velocity fields.
+
+\section{Current Status and Next Steps}
+\label{sec:status}
+
+\subsection{What Is Validated}
+\begin{itemize}
+    \item All spectral differential operators ($\nabla$, $\curl$,
+    $\div$ via projection) are implemated correctly to machine precision.
+    \item The Coulomb-gauge projection $\mathcal{P}(\mathbf{k})$ correctly
+    enforces $\div\mathbf{A}=0$ and, by the same construction,
+    $\div\mathbf{v}=0$ for the incompressible velocity field --- including
+    the $\mathbf{k}=0$ edge case.
+    \item The Hopf link initial condition is generated, regularized, and
+    gauge-projected, and carries genuine (non-trivial, solenoidal)
+    magnetic energy.
+    \item The full nonlinear forcing for both evolved fields,
+    $\mathbf{R}_A$ and $\mathbf{R}_v$, is implemented with Orszag $2/3$
+    dealiasing on every quadratic product, and both satisfy their
+    respective transversality constraints after projection.
+\end{itemize}
+
+\subsection{What Remains for Phase 1}
+\begin{itemize}
+    \item \textbf{Milestone 5}: precompute the Kassam--Trefethen ETDRK4
+    contour-integral coefficients $f_1, f_2, f_3, e_1=e^{\mathcal{L}\Delta
+    t/2}, e_2=e^{\mathcal{L}\Delta t}$ for \emph{two} independent linear
+    operators --- $\mathcal{L}_A = -\eta k^2 - \eta_4 k^4$ for the
+    induction equation and $\mathcal{L}_v = -\nu k^2 - \nu_4 k^4$ for the
+    momentum equation --- using the $M=32$, $R=1/\Delta t$ contour
+    described in Sec.~4.3--4.4 of \citealp{foundation2026}.
+    \item \textbf{Milestone 6}: assemble the ETDRK4 time-stepping loop
+    coupling $\mathbf{R}_A$ and $\mathbf{R}_v$ from Milestone 4 with the
+    two coefficient sets from Milestone 5, including checkpointing and
+    online diagnostics ($\div\mathbf{A}$, $\div\mathbf{v}$, energy,
+    $H_{\mathrm{gen}}$).
+    \item \textbf{Milestone 7}: end-to-end short integration from the
+    Hopf link IC at small grid size, as a fast regression smoke test.
+    \item \textbf{$128^3$ production run}: once Milestones 5--7 pass,
+    execute the full-resolution Hopf link evolution and verify the
+    Algorithmic Validation Strategy of Sec.~6 of
+    \citealp{foundation2026} (divergence-free to $10^{-13}$,
+    $\mathcal{O}(\Delta t^4)$ temporal convergence, $H_{\mathrm{gen}}$
+    conservation under $\eta_4=d_i=0$, and a clean $k^{-5/3}$ inertial
+    range with no pile-up at $k_{\max}$).
+\end{itemize}
+
+\newpage
+\begin{thebibliography}{99}
+
+\bibitem[Desigan(2026)]{foundation2026}
+Desigan, M. R. (2026). \textit{Mathematical Foundations of the HopfNet-MHD
+Engine}. Phase 1.0 Documentation.
+
+\bibitem[Kassam \& Trefethen(2005)]{kassam2005}
+Kassam, A. K., \& Trefethen, L. N. (2005). Fourth-order time-stepping for
+stiff PDEs. \textit{SIAM Journal on Scientific Computing}, 26(4),
+1214-1233.
+
+\bibitem[Abdelhamid et al.(2015)]{abdelhamid2015}
+Abdelhamid, H. M., Kawazura, Y., \& Yoshida, Z. (2015). Hamiltonian
+formalism of extended magnetohydrodynamics. \textit{Journal of Physics A:
+Mathematical and Theoretical}, 48(23), 235502.
+
+\bibitem[Orszag(1971)]{orszag1971}
+Orszag, S. A. (1971). On the elimination of aliasing in finite-difference
+schemes by filtering high-wavenumber components. \textit{Journal of the
+Atmospheric Sciences}, 28(6), 1074.
+
+\end{thebibliography}
+
+\end{document}
