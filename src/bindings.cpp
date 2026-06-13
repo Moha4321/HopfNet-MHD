@@ -10,6 +10,7 @@
 #include "spectral_grid.hpp"
 #include "fft3d.hpp"
 #include "projection.hpp"
+#include "hopf_link.hpp"
 
 namespace py = pybind11;
 
@@ -111,4 +112,21 @@ PYBIND11_MODULE(hopfnet_cpp, m) {
         std::memcpy(rz.mutable_data(), Bz.data(), total * sizeof(cplx));
         return py::make_tuple(rx, ry, rz);
     }, "Compute B_hat = i k x A_hat (spectral curl)");
+
+    // ---- Milestone 3: Hopf link initial condition (regularized Biot-Savart) ----
+    m.def("compute_hopf_link", [](int N, double L, double R, double d, double a_core,
+                                   double I0, double mu0, int n_quad) {
+        std::vector<double> Ax, Ay, Az;
+        hopf_link::compute(N, L, R, d, a_core, I0, mu0, n_quad, Ax, Ay, Az);
+
+        py::array_t<double> rx({N, N, N});
+        py::array_t<double> ry({N, N, N});
+        py::array_t<double> rz({N, N, N});
+        std::memcpy(rx.mutable_data(), Ax.data(), Ax.size() * sizeof(double));
+        std::memcpy(ry.mutable_data(), Ay.data(), Ay.size() * sizeof(double));
+        std::memcpy(rz.mutable_data(), Az.data(), Az.size() * sizeof(double));
+        return py::make_tuple(rx, ry, rz);
+    }, "Regularized Biot-Savart vector potential for the magnetic Hopf link initial condition",
+       py::arg("N"), py::arg("L"), py::arg("R"), py::arg("d"), py::arg("a_core"),
+       py::arg("I0") = 1.0, py::arg("mu0") = 1.0, py::arg("n_quad") = 64);
 }
