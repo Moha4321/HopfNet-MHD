@@ -10,6 +10,13 @@ if(APPLE)
     list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
 endif()
 
+execute_process(
+    COMMAND python3 -m pybind11 --cmakedir
+    OUTPUT_VARIABLE pybind11_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+
 # Find PyBind11, Eigen3, and Python components
 find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
