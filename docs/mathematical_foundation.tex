@@ -30,6 +30,15 @@ This document outlines the rigorous mathematical formulation governing the 3D Ps
 
 \tableofcontents
 \newpage
+\section{Normalization and Alfvén Units}
+\label{sec:units}
+To ensure computational well-posedness, all physical quantities in the pseudo-spectral engine are normalized to dimensionless \textbf{Alfvén units}. We define a characteristic length scale $L_0$ (such that the triply periodic simulation box is length $L = 2\pi$), a characteristic magnetic field $B_0$, and a characteristic mass density $\rho_0$. 
+
+From these, the Alfvén velocity is $v_A = B_0 / \sqrt{\mu_0 \rho_0}$ and the Alfvén transit time is $t_A = L_0 / v_A$. We normalize variables as follows:
+\begin{equation}
+    \mathbf{x} \to \frac{\mathbf{x}}{L_0}, \quad t \to \frac{t}{t_A}, \quad \mathbf{B} \to \frac{\mathbf{B}}{B_0}, \quad \mathbf{v} \to \frac{\mathbf{v}}{v_A}, \quad \rho \to \frac{\rho}{\rho_0}
+\end{equation}
+Under this normalization, the vacuum permeability becomes $\mu_0 = 1$. The Hall parameter scales as $d_i / L_0$, and the hyper-resistivity $\eta_4$ and hyper-viscosity $\nu_4$ become inverse Lundquist and Reynolds numbers at the grid scale, strictly isolating the dimensionless physical regime.
 
 \section{The Governing Equations: Hall-MHD in Vector Potential}
 \label{sec:equations}
@@ -50,7 +59,7 @@ To natively preserve the $\nabla \cdot \mathbf{B} = 0$ constraint to absolute ma
 By standard vector calculus identities, the divergence of the curl of any vector field is identically zero ($\nabla \cdot (\nabla \times \mathbf{A}) \equiv 0$). Therefore, by simulating the evolution of $\mathbf{A}$ instead of $\mathbf{B}$, we guarantee that no magnetic monopoles can ever be computationally generated, effectively hardcoding Gauss's Law into the algorithmic architecture.
 
 \subsection{The Generalized Ohm's Law in Plasma}
-To determine how $\mathbf{A}$ evolves, we must define the electric field $\mathbf{E}$ inside the plasma. In IB Physics, Ohm's Law is taught as $V=IR$, or in continuous form, $\mathbf{J} = \sigma \mathbf{E}$, where $\mathbf{J}$ is the current density and $\sigma$ is conductivity. However, a plasma is not a static copper wire; it is a violently moving fluid where moving magnetic fields generate their own internal forces. 
+To determine how $\mathbf{A}$ evolves, we must define the electric field $\mathbf{E}$ inside the plasma. In Physics, Ohm's Law is taught as $V=IR$, or in continuous form, $\mathbf{J} = \sigma \mathbf{E}$, where $\mathbf{J}$ is the current density and $\sigma$ is conductivity. However, a plasma is not a static copper wire; it is a violently moving fluid where moving magnetic fields generate their own internal forces. 
 
 In dimensionless units (where vacuum permeability $\mu_0 = 1$), the electric field generated within a two-fluid Hall-MHD plasma is described by the Generalized Ohm's Law:
 \begin{equation}
@@ -80,7 +89,7 @@ We now have an equation of the form $\nabla \times \mathbf{X} = \nabla \times \m
     \nabla \times \left[ \frac{\partial \mathbf{A}}{\partial t} - \mathbf{v} \times \mathbf{B} + \eta \mathbf{J} + \frac{d_i}{\rho}(\mathbf{J} \times \mathbf{B}) - \frac{d_i}{\rho} \nabla P_e \right] = 0
 \end{equation}
 
-In basic IB Physics, we learn that if the curl of an electric field is zero, the field is conservative and can be perfectly described as the gradient of a scalar voltage ($- \nabla V$). The same mathematical principle—formally known as Helmholtz's Theorem—applies here. Because the curl of the bracketed expression is identically zero, the entire expression must equal the gradient of some arbitrary scalar potential field, which we will define as $-\nabla \phi$. 
+In basic Physics, we learn that if the curl of an electric field is zero, the field is conservative and can be perfectly described as the gradient of a scalar voltage ($- \nabla V$). The same mathematical principle—formally known as Helmholtz's Theorem—applies here. Because the curl of the bracketed expression is identically zero, the entire expression must equal the gradient of some arbitrary scalar potential field, which we will define as $-\nabla \phi$. 
 
 Thus, we can "uncurl" the equation by dropping the $\nabla \times$ operator and equating the internal terms to this scalar potential:
 \begin{equation}
@@ -168,10 +177,19 @@ This reveals the fundamental architectural elegance of the spectral method. The 
     \mathcal{P}_{ij}(\mathbf{k}) = \delta_{ij} - \frac{k_i k_j}{|\mathbf{k}|^2}
 \end{equation}
 
-\subsection{Causal Conclusion}
-Equation (18) is the computational crown jewel of our Phase 1 engine. It mathematically proves that we do \textit{not} need to evaluate the scalar potential $\phi$ or solve a Poisson equation. 
+\subsection{The $k=0$ Singularity and Mean-Field Dynamics}
+Equation (18) reveals that the operator acting on $\hat{\mathbf{R}}$ is the \textbf{Orthogonal Projection Tensor}, $\mathcal{P}_{ij}(\mathbf{k}) = \delta_{ij} - \frac{k_i k_j}{|\mathbf{k}|^2}$. 
 
-By simply calculating the raw physical forces ($\mathbf{R}$) in real space, transforming them into Fourier space ($\hat{\mathbf{R}}$), and multiplying them by the projection tensor $\mathcal{P}_{ij}$, we perfectly strip away any longitudinal components. The resulting vector $\frac{\partial \hat{\mathbf{A}}}{\partial t}$ is guaranteed to be strictly orthogonal to $\mathbf{k}$. When stepped forward in time, this mathematically mandates that $\nabla \cdot \mathbf{A} = 0$ is preserved to absolute floating-point precision ($10^{-15}$), ensuring that no unphysical magnetic monopoles can ever corrupt the topological decay of the Hopf Link.
+Operationally, this tensor presents a $0/0$ singularity at the zero-mode ($\mathbf{k} = \mathbf{0}$). Physically, the $k=0$ mode represents the volume-averaged mean magnetic field of the simulation box. Because a spatially uniform mean field has zero gradient, it trivially satisfies $\nabla \cdot \mathbf{A} = 0$. Therefore, at $\mathbf{k} = \mathbf{0}$, we explicitly define the projection tensor as the identity matrix ($\mathcal{P}(\mathbf{0}) \equiv \mathbb{I}$). In our specific Hopf-link setup, the background mean field is zero, meaning the $k=0$ mode is completely fixed and carries no dynamics.
+
+Equation (18) mathematically proves that we do \textit{not} need to evaluate the scalar potential $\phi$. By transforming the raw physical forces into Fourier space and multiplying by $\mathcal{P}_{ij}$, we perfectly strip away longitudinal components, ensuring $\nabla \cdot \mathbf{A} = 0$ is preserved to absolute machine precision ($10^{-15}$).
+
+\subsection{Hermitian Symmetry and the Orszag 2/3 Dealiasing Rule}
+To compute the nonlinear cross-products (e.g., $\mathbf{v} \times \mathbf{B}$), the engine must transform the spectral fields back to real space, multiply them, and transform the result back to $k$-space. Because $\mathbf{A}(\mathbf{x})$ is a strictly real-valued physical field, its Fourier coefficients exhibit Hermitian symmetry: $\hat{\mathbf{A}}(-\mathbf{k}) = \hat{\mathbf{A}}^*(\mathbf{k})$. Our C++ architecture leverages a Real-to-Complex Fast Fourier Transform (rFFT), which omits the redundant negative frequencies, cutting the $128^3$ RAM footprint exactly in half—a crucial optimization for executing high-fidelity dynamics entirely within local Unified Memory.
+
+However, multiplying two spatial grids in real space causes a convolution in Fourier space. A quadratic nonlinearity multiplying modes $k_1$ and $k_2$ generates energy at $k_1 + k_2$. If $k_1 + k_2 > k_{max}$ (the Nyquist limit of the grid), this energy unphysically "folds back" into the resolved low-frequency spectrum, triggering a catastrophic aliasing instability. 
+
+To eliminate this, we strictly enforce the \textbf{Orszag 2/3 Rule}. Before computing any nonlinear product, we apply a sharp spectral mask, zeroing out all Fourier modes where $|\mathbf{k}| > \frac{2}{3}k_{max}$. While this reduces the effective resolution of our $128^3$ grid to $\approx 85^3$, it mathematically guarantees an alias-free cascade, isolating pure physics from numerical artifact.
 
 \section{Initial Conditions: The 3D Magnetic Hopf Link}
 \label{sec:hopf_link}
@@ -253,13 +271,15 @@ Instead of approximating the stiff linear derivative, ETD multiplies the entire 
 \end{equation}
 This formulation is profoundly powerful: the linear stiffness is solved analytically (which is unconditionally stable for any $\Delta t$), leaving only the non-stiff nonlinear integral to be approximated via Runge-Kutta.
 
-\subsection{The Floating-Point Singularity ($0/0$)}
-To evaluate the nonlinear integral numerically using a 4th-order Runge-Kutta scheme (ETDRK4), we must calculate specific coefficient matrices. The simplest of these, used for the first-order Euler step, is:
-\begin{equation}
-    f_1(\mathcal{L}) = \frac{e^{\mathcal{L}\Delta t} - 1}{\mathcal{L}}
-\end{equation}
+\subsection{The Floating-Point Singularity in RK4 Coefficients}
+To evaluate the nonlinear integral numerically using a 4th-order Runge-Kutta scheme (ETDRK4), we must calculate specific coefficient matrices for the sub-steps. These include the first-order Euler step $f_1$, and the higher-order corrections $f_2$ and $f_3$:
+\begin{align}
+    f_1(\mathcal{L}) &= \frac{e^{\mathcal{L}\Delta t} - I}{\mathcal{L}} \\
+    f_2(\mathcal{L}) &= \frac{e^{\mathcal{L}\Delta t} - \mathcal{L}\Delta t - I}{\mathcal{L}^2 \Delta t^2} \\
+    f_3(\mathcal{L}) &= \frac{e^{\mathcal{L}\Delta t} - \frac{1}{2}\mathcal{L}^2 \Delta t^2 - \mathcal{L}\Delta t - I}{\mathcal{L}^3 \Delta t^3}
+\end{align}
 
-\textbf{The Computational Vulnerability:} Equation (31) presents a catastrophic floating-point vulnerability. For the zero-mode ($k=0$), which represents the mean background magnetic field, the linear operator $\mathcal{L} = 0$. Consequently, Equation (31) evaluates strictly to $0/0$. Even for small wavenumbers ($k \approx 1$), $\mathcal{L}$ is very close to zero, causing severe \textit{catastrophic cancellation} in double-precision arithmetic. A single `NaN` (Not-a-Number) generated at $k=0$ will instantly infect the entire $128^3$ grid upon the next inverse Fourier transform, destroying the simulation.
+\textbf{The Computational Vulnerability:} These functions present catastrophic floating-point vulnerabilities. As $k \to 0$, the linear operator $\mathcal{L} \to 0$. Equations (31-33) evaluate strictly to $0/0$. Even for small wavenumbers ($k \approx 1$), $\mathcal{L}$ is very close to zero, causing severe \textit{catastrophic cancellation} in double-precision arithmetic. A single `NaN` generated here will instantly infect the entire grid upon the next inverse FFT.
 
 \subsection{The Kassam-Trefethen Contour Integration}
 To cure this $0/0$ singularity without resorting to clumsy Taylor series expansions (which suffer from their own truncation errors), we employ Cauchy's Integral Formula from complex analysis, famously applied to ETDRK4 by Kassam and Trefethen (2005).
@@ -317,6 +337,8 @@ We can now define the \textbf{Generalized Helicity}, $H_{gen}$, which measures t
     H_{gen} = \int_V \mathbf{A}^* \cdot \mathbf{B}^* \, dV = \int_V (\mathbf{A} + d_i \mathbf{v}) \cdot (\mathbf{B} + d_i \boldsymbol{\omega}) \, dV
 \end{equation}
 
+Note that $\mathbf{A}^*$ inherits the gauge freedom of $\mathbf{A}$: since $\nabla \times \mathbf{v}$ does not constrain the longitudinal part of $\mathbf{A}^*$, its absolute value carries the same gauge ambiguity as $H$ itself. However, because our Coulomb-gauge projection $\mathcal{P}(\mathbf{k})$ is applied consistently at $t=0$ and the gauge choice is held fixed thereafter (no re-projection of $\phi$ is performed mid-step beyond what Section \ref{sec:gauge} already enforces), $H_{gen}$ is computed on a single, self-consistent gauge slice throughout the run. We therefore track \textit{changes} in $H_{gen}$ relative to its $t=0$ value as the physically meaningful diagnostic, rather than its absolute magnitude.
+
 \subsection{The Conservation Proof}
 To prove that $H_{gen}$ is an absolute invariant of the collisionless ($\eta \to 0$) Hall-MHD system, we must show that its time derivative is strictly zero.
 
@@ -367,6 +389,16 @@ Equation (46) reveals that the time derivative of Generalized Helicity is exactl
 Because our C++ physics engine operates in a triply periodic Fourier domain ($T^3$), there are no physical boundaries; the fluxes exiting one face of the cube re-enter the opposite face identically, causing the surface integral to evaluate to exactly zero. 
 
 Therefore, Generalized Helicity is rigorously conserved. Any decay in $H_{gen}$ observed during our numerical simulation is mathematically guaranteed to be the direct, causal consequence of the explicitly added hyper-resistivity ($\eta_4 \nabla^4 \mathbf{A}$) breaking the flux tubes. This gives us the ultimate topological ground truth: when the Artificial Intelligence predicts a singularity, it is predicting a genuine, physically irreversible thermodynamic event.
+
+\section{Algorithmic Validation Strategy}
+\label{sec:validation}
+Before the engine is deployed to generate datasets for the Neural ODE, it must pass a suite of absolute physics verifications:
+\begin{enumerate}
+    \item \textbf{Divergence-Free Machine Precision:} Following initialization and every RK4 step, the condition $\max(|\nabla \cdot \mathbf{A}|) < 10^{-13}$ must hold.
+    \item \textbf{Temporal Convergence:} By halving the timestep $\Delta t$, the global error of the nonlinear ETDRK4 integration must scale as $\mathcal{O}(\Delta t^4)$.
+    \item \textbf{Inviscid Invariant Conservation:} By temporarily setting $\eta_4 = 0$ and $d_i=0$ (Ideal MHD limit), Magnetic Helicity $H$ and Energy $W$ must be conserved globally to $<0.1\%$ error over a full dynamic transit time.
+    \item \textbf{Energy Spectrum Integrity:} The 1D isotropic magnetic energy spectrum $E(k)$ must be computed. It must exhibit a physical turbulent cascade (e.g., Kolmogorov $k^{-5/3}$) in the inertial range, with no unphysical energy pile-up near $k_{max}$, definitively proving the success of the Orszag 2/3 dealiasing rule.
+\end{enumerate}
 
 \newpage
 \begin{thebibliography}{99}
