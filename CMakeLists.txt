@@ -15,8 +15,18 @@ find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
+# Find FFTW3 (installed via `brew install fftw`)
+find_path(FFTW3_INCLUDE_DIR fftw3.h PATHS /opt/homebrew/include)
+find_library(FFTW3_LIB fftw3 PATHS /opt/homebrew/lib)
+
+if(NOT FFTW3_INCLUDE_DIR OR NOT FFTW3_LIB)
+    message(FATAL_ERROR "FFTW3 not found. Install with: brew install fftw")
+endif()
+
 # Create the Python module
 pybind11_add_module(hopfnet_cpp src/bindings.cpp)
 
-# Link Eigen3
-target_link_libraries(hopfnet_cpp PRIVATE Eigen3::Eigen)
+target_include_directories(hopfnet_cpp PRIVATE ${FFTW3_INCLUDE_DIR} src)
+
+# Link Eigen3 and FFTW3
+target_link_libraries(hopfnet_cpp PRIVATE Eigen3::Eigen ${FFTW3_LIB})

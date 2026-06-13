@@ -3,6 +3,13 @@
 #include <pybind11/eigen.h>
 #include <Eigen/Dense>
 
+#include <complex>
+#include <cstring>
+#include <vector>
+
+#include "spectral_grid.hpp"
+#include "fft3d.hpp"
+
 namespace py = pybind11;
 
 // A simple function to test Eigen and PyBind11 memory mapping
@@ -10,8 +17,59 @@ Eigen::MatrixXd double_matrix(Eigen::Ref<const Eigen::MatrixXd> input) {
     return input * 2.0;
 }
 
-// Create the Python module named 'hopfnet_cpp'
 PYBIND11_MODULE(hopfnet_cpp, m) {
-    m.doc() = "C++ Physics Engine Backend for HopfNet"; // Optional module docstring
+    m.doc() = "C++ Physics Engine Backend for HopfNet";
     m.def("double_matrix", &double_matrix, "A function that doubles an Eigen matrix");
+
+    // ---- SpectralGrid: wavevectors, |k|^2, dealias mask ----
+    py::class_<SpectralGrid>(m, "SpectralGrid")
+        .def(py::init<int, double>(), py::arg("N"), py::arg("L"))
+        .def_readonly("N", &SpectralGrid::N)
+        .def_readonly("L", &SpectralGrid::L)
+        .def_readonly("Nz_half", &SpectralGrid::Nz_half)
+        .def("kx", [](const SpectralGrid& g) {
+            return py::array_t<double>(g.kx.size(), g.kx.data());
+        })
+        .def("ky", [](const SpectralGrid& g) {
+            return py::array_t<double>(g.ky.size(), g.ky.data());
+        })
+        .def("kz", [](const SpectralGrid& g) {
+            return py::array_t<double>(g.kz.size(), g.kz.data());
+        })
+        .def("k2", [](const SpectralGrid& g) {
+            py::array_t<double> arr({g.N, g.N, g.Nz_half});
+            std::memcpy(arr.mutable_data(), g.k2.data(), g.k2.size() * sizeof(double));
+            return arr;
+        })
+        .def("dealias_mask", [](const SpectralGrid& g) {
+            py::array_t<double> arr({g.N, g.N, g.Nz_half});
+            auto buf = arr.mutable_unchecked<3>();
+            for (int i = 0; i < g.N; ++i)
+                for (int j = 0; j < g.N; ++j)
+                    for (int k = 0; k < g.Nz_half; ++k)
+                        buf(i, j, k) = (double)g.dealias_mask[g.index(i, j, k)];
+            return arr;
+        });
+
+    // ---- FFT3D: real-to-complex 3D FFT pair ----
+    py::class_<FFT3D>(m, "FFT3D")
+        .def(py::init<int>(), py::arg("N"))
+        .def("forward", [](FFT3D& f, py::array_t<double, py::array::c_style | py::array::forcecast> input) {
+            const int N = f.N(), Nzh = f.Nz_half();
+            std::vector<std::complex<double>> out((size_t)N * N * Nzh);
+            f.forward(input.data(), out.data());
+
+            py::array_t<std::complex<double>> result({N, N, Nzh});
+            std::memcpy(result.mutable_data(), out.data(), out.size() * sizeof(std::complex<double>));
+            return result;
+        })
+        .def("inverse", [](FFT3D& f, py::array_t<std::complex<double>, py::array::c_style | py::array::forcecast> input) {
+            const int N = f.N();
+            std::vector<double> out((size_t)N * N * N);
+            f.inverse(reinterpret_cast<const std::complex<double>*>(input.data()), out.data());
+
+            py::array_t<double> result({N, N, N});
+            std::memcpy(result.mutable_data(), out.data(), out.size() * sizeof(double));
+            return result;
+        });
 }
