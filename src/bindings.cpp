@@ -9,6 +9,7 @@
 
 #include "spectral_grid.hpp"
 #include "fft3d.hpp"
+#include "projection.hpp"
 
 namespace py = pybind11;
 
@@ -72,4 +73,42 @@ PYBIND11_MODULE(hopfnet_cpp, m) {
             std::memcpy(result.mutable_data(), out.data(), out.size() * sizeof(double));
             return result;
         });
+
+    // ---- Milestone 2: Coulomb gauge projection and spectral curl ----
+    using carray = py::array_t<std::complex<double>, py::array::c_style | py::array::forcecast>;
+
+    m.def("project_field", [](const SpectralGrid& grid, carray ax, carray ay, carray az) {
+        const size_t total = (size_t)grid.N * grid.N * grid.Nz_half;
+        std::vector<cplx> Ax(ax.data(), ax.data() + total);
+        std::vector<cplx> Ay(ay.data(), ay.data() + total);
+        std::vector<cplx> Az(az.data(), az.data() + total);
+
+        project_field(grid, Ax, Ay, Az);
+
+        py::array_t<std::complex<double>> rx({grid.N, grid.N, grid.Nz_half});
+        py::array_t<std::complex<double>> ry({grid.N, grid.N, grid.Nz_half});
+        py::array_t<std::complex<double>> rz({grid.N, grid.N, grid.Nz_half});
+        std::memcpy(rx.mutable_data(), Ax.data(), total * sizeof(cplx));
+        std::memcpy(ry.mutable_data(), Ay.data(), total * sizeof(cplx));
+        std::memcpy(rz.mutable_data(), Az.data(), total * sizeof(cplx));
+        return py::make_tuple(rx, ry, rz);
+    }, "Apply the Coulomb gauge projection tensor P(k) to a vector field in Fourier space");
+
+    m.def("spectral_curl", [](const SpectralGrid& grid, carray ax, carray ay, carray az) {
+        const size_t total = (size_t)grid.N * grid.N * grid.Nz_half;
+        std::vector<cplx> Ax(ax.data(), ax.data() + total);
+        std::vector<cplx> Ay(ay.data(), ay.data() + total);
+        std::vector<cplx> Az(az.data(), az.data() + total);
+        std::vector<cplx> Bx, By, Bz;
+
+        spectral_curl(grid, Ax, Ay, Az, Bx, By, Bz);
+
+        py::array_t<std::complex<double>> rx({grid.N, grid.N, grid.Nz_half});
+        py::array_t<std::complex<double>> ry({grid.N, grid.N, grid.Nz_half});
+        py::array_t<std::complex<double>> rz({grid.N, grid.N, grid.Nz_half});
+        std::memcpy(rx.mutable_data(), Bx.data(), total * sizeof(cplx));
+        std::memcpy(ry.mutable_data(), By.data(), total * sizeof(cplx));
+        std::memcpy(rz.mutable_data(), Bz.data(), total * sizeof(cplx));
+        return py::make_tuple(rx, ry, rz);
+    }, "Compute B_hat = i k x A_hat (spectral curl)");
 }
