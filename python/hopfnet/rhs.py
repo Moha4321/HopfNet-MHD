@@ -1,26 +1,49 @@
 """
-Milestone 4: nonlinear RHS pipeline.
+Milestone 4: nonlinear RHS pipeline — Incompressible Hall-MHD.
 
-Implements, in terms of the C++ primitives from Milestones 1-3
-(FFT3D, SpectralGrid, project_field, spectral_curl):
+PHYSICAL REGIME
+---------------
+We operate strictly in the Incompressible Hall-MHD limit:
 
+    rho = 1  (global constant, normalized to unity)
+    div(v) = 0  (enforced spectrally by P(k) on every RHS evaluation)
+
+This filters acoustic (sound) waves, which are irrelevant to magnetic
+reconnection and would otherwise severely restrict the ETDRK4 timestep.
+The surviving wave modes — Hall whistler waves and Alfvén waves — are
+exactly the modes that drive topological collapse and are the subject of
+the Neural ODE predictor in Phase 3.
+
+INITIAL CONDITION FOR THE VELOCITY FIELD
+-----------------------------------------
+The plasma is initialized at rest:  v(t=0) = 0.
+The velocity field is driven entirely by the Lorentz force J x B as the
+Hopf link attempts Taylor relaxation. This is the physically correct choice:
+the only source of momentum in the initial state is the magnetic stress of
+the interlocked flux rings.
+
+FUNCTIONS
+---------
   - spectral_derivative:  d/dx_j in Fourier space (multiplication by i*k_j)
   - compute_B_and_J:      B = curl(A), J = curl(B)
   - compute_advection:    (v . grad) v, dealiased
-  - compute_R_A:          R = v x B - (d_i/rho)(J x B) - eta*J   (Eq. 12),
-                           dealiased and Coulomb-projected (Eq. 18)
-  - compute_R_v:          incompressible Navier-Stokes nonlinear forcing
-                           -(v.grad)v + (1/rho)(J x B), dealiased and
-                           pressure-projected (same P(k) tensor as Eq. 18,
-                           applied to velocity rather than vector potential)
+  - compute_R_A:          R = v x B - (d_i)(J x B) - eta*J   (Eq. 12),
+                           dealiased and Coulomb-projected (Eq. 18).
+                           rho=1 absorbed into d_i parameter.
+  - compute_R_v:          -(v.grad)v + (J x B), dealiased and
+                           pressure-projected with the same P(k) as above,
+                           eliminating grad(P) and enforcing div(v)=0.
+                           rho=1 makes the Lorentz term dimensionless.
 
-All "_hat" quantities are complex spectral fields of shape (N, N, N/2+1);
-all "_real" quantities are real (N, N, N) fields. Vector fields are
-represented as length-3 tuples of arrays (x, y, z components).
+All "_hat" quantities are complex spectral fields of shape (N, N, N/2+1).
+All "_real" quantities are real (N, N, N) fields.
+Vector fields are length-3 tuples of arrays (x, y, z components).
 
-The linear (stiff) operators L_A = -eta*k^2 - nu4_A*k^4 and
-L_v = -nu*k^2 - nu4_v*k^4 are handled separately by the ETDRK4
-coefficients (Milestone 5) and are NOT part of R_A / R_v here.
+The stiff linear operators
+    L_A = -eta*k^2 - eta4*k^4   (magnetic hyper-resistivity)
+    L_v = -nu*k^2  - nu4*k^4    (viscous hyper-diffusion)
+are handled by the ETDRK4 coefficient sets in Milestone 5 and are NOT
+part of R_A / R_v here.
 """
 import numpy as np
 
@@ -87,11 +110,13 @@ def compute_advection(grid, fft, v_hat):
     return adv_hat
 
 
-def compute_R_A(grid, fft, v_hat, B_hat, J_hat, eta, d_i, rho=1.0):
+def compute_R_A(grid, fft, v_hat, B_hat, J_hat, eta, d_i):
     """
-    Hall-MHD induction RHS (Eq. 12, dealiased and projected via Eq. 18):
+    Hall-MHD induction RHS (Eq. 12, dealiased and Coulomb-projected):
 
-        R = v x B - (d_i/rho)(J x B) - eta*J
+        R_A = v x B - d_i*(J x B) - eta*J
+
+    rho=1 is absorbed: d_i here is already d_i/rho with rho=1.
     """
     v_real = to_real(fft, v_hat)
     B_real = to_real(fft, B_hat)
@@ -100,7 +125,7 @@ def compute_R_A(grid, fft, v_hat, B_hat, J_hat, eta, d_i, rho=1.0):
     vxB = cross_real(v_real, B_real)
     JxB = cross_real(J_real, B_real)
 
-    R_real = tuple(vxB[c] - (d_i / rho) * JxB[c] - eta * J_real[c] for c in range(3))
+    R_real = tuple(vxB[c] - d_i * JxB[c] - eta * J_real[c] for c in range(3))
 
     R_hat = to_hat(fft, R_real)
     R_hat = apply_dealias(grid, R_hat)
@@ -108,13 +133,12 @@ def compute_R_A(grid, fft, v_hat, B_hat, J_hat, eta, d_i, rho=1.0):
     return R_hat
 
 
-def compute_R_v(grid, fft, v_hat, B_hat, J_hat, rho=1.0):
+def compute_R_v(grid, fft, v_hat, B_hat, J_hat):
     """
-    Incompressible Navier-Stokes nonlinear forcing, dealiased and
-    pressure-projected with the same P(k) tensor used for the Coulomb
-    gauge (here enforcing div(v) = 0):
+    Incompressible NS nonlinear forcing (rho=1), dealiased and
+    pressure-projected via the same P(k) that enforces div(v)=0:
 
-        R_v = -(v . grad) v + (1/rho)(J x B)
+        R_v = -(v.grad)v + (J x B)
     """
     adv_hat = compute_advection(grid, fft, v_hat)
 
@@ -124,6 +148,6 @@ def compute_R_v(grid, fft, v_hat, B_hat, J_hat, rho=1.0):
     JxB_hat = to_hat(fft, JxB_real)
     JxB_hat = apply_dealias(grid, JxB_hat)
 
-    R_hat = tuple(-adv_hat[c] + (1.0 / rho) * JxB_hat[c] for c in range(3))
+    R_hat = tuple(-adv_hat[c] + JxB_hat[c] for c in range(3))
     R_hat = eng.project_field(grid, *R_hat)
     return R_hat
