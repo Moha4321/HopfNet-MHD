@@ -11,6 +11,8 @@
 #include "projection.hpp"
 #include "hopf_link.hpp"
 #include "etdrk4_coeffs.hpp"
+#include "null_finder.hpp" 
+#include "point_cloud.hpp"  // <--- ADD THIS HERE
 
 namespace py = pybind11;
 using cplx   = std::complex<double>;
@@ -164,4 +166,62 @@ PYBIND11_MODULE(hopfnet_cpp, m) {
             py::array_t<double> a({g.N,g.N,g.Nz_half});
             std::memcpy(a.mutable_data(),c.f3.data(),c.f3.size()*sizeof(double));
             return a; }, py::arg("grid"));
+
+#include "null_finder.hpp"
+
+    // ================================================================
+    // Milestone 9: Haynes-Parnell Magnetic Null Finder
+    // ================================================================
+    m.def("find_nulls",
+        [](int N, double L, 
+           py::array_t<double, py::array::c_style | py::array::forcecast> bx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> by,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bz) {
+            
+            std::vector<MagneticNull> nulls = null_finder::find_nulls(
+                N, L, bx.data(), by.data(), bz.data()
+            );
+
+            // Convert to numpy arrays
+            int M = nulls.size();
+            py::array_t<double> pos({M, 3});
+            py::array_t<int> types(M);
+            
+            auto pos_r = pos.mutable_unchecked<2>();
+            auto types_r = types.mutable_unchecked<1>();
+            
+            for (int i = 0; i < M; ++i) {
+                pos_r(i, 0) = nulls[i].x;
+                pos_r(i, 1) = nulls[i].y;
+                pos_r(i, 2) = nulls[i].z;
+                types_r(i) = nulls[i].type;
+            }
+            
+            return py::make_tuple(pos, types);
+        }, 
+        "Find and classify magnetic nulls using Newton-Raphson",
+        py::arg("N"), py::arg("L"), py::arg("bx"), py::arg("by"), py::arg("bz"));
+
+// ================================================================
+    // Milestone 11: Current-Sheet Point Cloud Extractor
+    // ================================================================
+    m.def("extract_point_cloud",
+        [](const SpectralGrid& grid, FFT3D& fft,
+           carray jx_hat, carray jy_hat, carray jz_hat, 
+           double threshold) {
+            
+            std::vector<double> raw_data = point_cloud::extract(
+                grid, fft, jx_hat.data(), jy_hat.data(), jz_hat.data(), threshold
+            );
+
+            int M = raw_data.size() / 9;
+            py::array_t<double> out({M, 9});
+            std::memcpy(out.mutable_data(), raw_data.data(), raw_data.size() * sizeof(double));
+            
+            return out;
+        }, 
+        "Extract active current sheet points and their symmetric Shape Operator",
+        py::arg("grid"), py::arg("fft"), 
+        py::arg("jx_hat"), py::arg("jy_hat"), py::arg("jz_hat"), 
+        py::arg("threshold") = 0.6);
 }
