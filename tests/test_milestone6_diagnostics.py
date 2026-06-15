@@ -48,12 +48,15 @@ def test_diagnostics_analytic_beltrami():
     assert diags["div_v_max"] < 1e-12
 
     # --- 2. Energy Verification ---
-    # E_M = 0.5 * \int |A|^2 dV
-    # |A|^2 contains 6 squared trig terms. Each integrates to 0.5 * Volume.
-    # Total Volume = (2*pi)^3
+    # E_m = 0.5 * \int |B|^2 dV   (magnetic energy, B = curl A)
+    # For this specific Beltrami eigenstate curl(A) = -A, so |B| = |A|.
+    # Therefore E_m = 0.5 * \int |A|^2 dV holds ONLY for this eigenstate —
+    # it is NOT a general identity.
+    # |A|^2 = (sin Y + cos Z)^2 + (sin Z + cos X)^2 + (sin X + cos Y)^2
+    # Each squared trig term integrates to 0.5*V; there are 6 such terms.
     V = (2 * np.pi)**3
-    expected_E_m = 0.5 * (6 * 0.5) * V
-    expected_E_k = 0.5 * (6 * 0.5) * V
+    expected_E_m = 0.5 * (6 * 0.5) * V   # = 0.5 * int|B|^2 dV = 0.5 * int|A|^2 dV
+    expected_E_k = 0.5 * (6 * 0.5) * V   # = 0.5 * int|v|^2 dV (v = A here)
 
     np.testing.assert_allclose(diags["E_m"], expected_E_m, rtol=1e-12)
     np.testing.assert_allclose(diags["E_k"], expected_E_k, rtol=1e-12)

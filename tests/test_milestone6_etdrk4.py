@@ -22,11 +22,13 @@ def test_etdrk4_half_step_identity():
     
     integrator = ETDRK4Integrator(grid, fft, dt, d_i=0.1, eta=0.01, eta4=1e-4, nu=0.01, nu4=1e-4)
     
-    # The exact mathematical limit of Q = (e^(c/2) - 1)/c as c->0 is 1/2.
-    # Check the k=0 mode (index 0,0,0) where c=0.
+    # The exact mathematical limit of Q = (exp(L*dt/2) - 1)/L as L->0 is dt/2.
+    # Via the identity Q = f1/(E1+1) at k=0: f1(0)=dt, E1(0)=exp(0)=1,
+    # so Q(0) = dt/(1+1) = dt/2.
+    # Check the k=0 mode (index 0,0,0) where L=0.
     q_limit = integrator.Q_A[0, 0, 0]
     
-    assert np.isclose(q_limit.real, 0.5, atol=1e-12)
+    assert np.isclose(q_limit.real, dt / 2.0, atol=1e-12)
     assert np.isclose(q_limit.imag, 0.0, atol=1e-12)
 
 def test_etdrk4_linear_exactness():
@@ -55,9 +57,10 @@ def test_etdrk4_linear_exactness():
     # Take a step
     A_next, v_next = integrator.step(A_n, v_n)
     
-    # In a purely linear system (N=0), ETD is mathematically EXACT: A_{n+1} = exp(L*dt) * A_n
-    expected_A = tuple(integrator.c_A.E * A_n[i] for i in range(3))
-    expected_v = tuple(integrator.c_v.E * v_n[i] for i in range(3))
+    # In a purely linear system (N=0), ETD is mathematically EXACT:
+    # A_{n+1} = exp(L*dt) * A_n = E2 * A_n
+    expected_A = tuple(integrator.E2_A * A_n[i] for i in range(3))
+    expected_v = tuple(integrator.E2_v * v_n[i] for i in range(3))
     
     # Apply final projection to match the integrator's pipeline
     expected_A = eng.project_field(grid, *expected_A)

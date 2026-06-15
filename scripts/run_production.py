@@ -28,20 +28,23 @@ def compute_1d_spectrum(grid, B_hat):
     k_bins = np.arange(0, int(np.max(k_mag)) + 2)
     E_k = np.zeros(len(k_bins) - 1)
     
-    # We must account for the rFFT Hermitian symmetry!
-    # Modes with kz > 0 are counted twice (positive and negative z)
-    # kz = 0 and kz = N/2 are counted once.
+    # Account for rFFT Hermitian symmetry:
+    # kz=0 and kz=N/2 planes are unique; all other kz>0 modes have a
+    # conjugate partner at -kz (not stored), so they contribute twice.
     weight = np.ones_like(energy_3d)
-    weight[:, :, 1:-1] = 2.0 
+    weight[:, :, 1:-1] = 2.0
 
     weighted_energy = energy_3d * weight
-    
-    # Bin the energy into shells
     k_indices = np.digitize(k_mag, k_bins) - 1
-    
+
     for i in range(len(E_k)):
         mask = (k_indices == i)
-        E_k[i] = np.sum(weighted_energy[mask])
+        # Raw shell-integrated energy
+        shell_energy = np.sum(weighted_energy[mask])
+        # Normalize by shell width dk=1 to get E(k) = energy per unit wavenumber,
+        # so that \int E(k) dk = E_total (conventional spectral energy density).
+        dk = k_bins[1] - k_bins[0]   # = 1 for integer bins
+        E_k[i] = shell_energy / dk
         
     return k_bins[:-1], E_k
 
