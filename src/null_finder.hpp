@@ -77,6 +77,8 @@ inline std::vector<MagneticNull> find_nulls(int N, double L,
                     double min_bx = cx[0], max_bx = cx[0];
                     double min_by = cy[0], max_by = cy[0];
                     double min_bz = cz[0], max_bz = cz[0];
+                    double max_b_sq = 0.0; // <-- ADD THIS
+
                     for(int m=1; m<8; ++m) {
                         if(cx[m] < min_bx) min_bx = cx[m]; if(cx[m] > max_bx) max_bx = cx[m];
                         if(cy[m] < min_by) min_by = cy[m]; if(cy[m] > max_by) max_by = cy[m];
@@ -85,7 +87,19 @@ inline std::vector<MagneticNull> find_nulls(int N, double L,
                     if (min_bx > 0 || max_bx < 0 || 
                         min_by > 0 || max_by < 0 || 
                         min_bz > 0 || max_bz < 0) continue;
+                        
+                    // <-- ADD THIS NOISE FLOOR REJECT -->
+                    // Calculate max B^2 in this cell
+                    for(int m=0; m<8; ++m) {
+                        double b_sq = cx[m]*cx[m] + cy[m]*cy[m] + cz[m]*cz[m];
+                        if (b_sq > max_b_sq) max_b_sq = b_sq;
+                    }
+                    // If the field magnitude is essentially machine noise, reject it.
+                    // 1e-10 for B^2 means |B| ~ 1e-5. True fields are ~O(0.1 to 1.0).
+                    if (max_b_sq < 1e-10) continue; 
+                    // <-------------------------------->
 
+                        
                     // 2. Newton-Raphson Iteration
                     Eigen::Vector3d u(0.5, 0.5, 0.5); // Start at cell center
                     bool converged = false;
