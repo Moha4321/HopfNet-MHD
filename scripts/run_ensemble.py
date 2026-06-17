@@ -31,50 +31,45 @@ def setup_sampler(n_samples=40, seed=42):
 
 def run_single_simulation(run_id, eta, a_core, N=128, steps=200, diag_interval=5, out_dir="data_ensemble"):
     print(f"\n--- Starting Run {run_id:03d} | eta={eta:.2e}, a_core={a_core:.3f} ---")
-    
-    # Initialize the simulation framework
+
     checkpoint_dir = os.path.join(out_dir, f"run_{run_id:03d}_checkpoints")
     sim = HopfNetSimulation(N=N, dt=0.005, eta=eta, nu=eta, d_i=0.1, out_dir=checkpoint_dir)
-    
-    # Override the initialization to use the sampled a_core
+
     Ax, Ay, Az = eng.compute_hopf_link(N, sim.L, R=1.0, d=0.3, a_core=a_core, I0=1.0, mu0=1.0, n_quad=64)
     A_hat_raw = (sim.fft.forward(Ax), sim.fft.forward(Ay), sim.fft.forward(Az))
     sim.A_hat = eng.project_field(sim.grid, *A_hat_raw)
 
-    # Precalculate initial geometry for the linking number calibration factor
+    # Compute Phi0 and calib_factor ONCE at t=0 from the initial field.
+    # Phi0 is cached and passed to every subsequent Lk call — never recomputed
+    # from the evolving B_hat, since the ring geometry is undefined after reconnection.
     B_hat_init, _ = compute_B_and_J(sim.grid, sim.A_hat)
-    H0 = compute_magnetic_helicity(sim.grid, sim.fft, sim.A_hat, B_hat_init)
+    H0   = compute_magnetic_helicity(sim.grid, sim.fft, sim.A_hat, B_hat_init)
     Phi0 = compute_flux(sim.grid, sim.fft, B_hat_init)
-    
-    # Normalizes the continuous field so that initial Lk = 1.0
     calib_factor = (2.0 * Phi0**2) / H0 if np.abs(H0) > 1e-12 else 1.0
 
     point_clouds = []
-    time_series = []
-    t_c = None
+    time_series  = []
+    t_c          = None
 
     for step in range(steps):
         time_now = step * sim.dt
-        
-        # Diagnostic Step: Check Topology and Extract Point Cloud
+
         if step % diag_interval == 0:
             B_hat, J_hat = compute_B_and_J(sim.grid, sim.A_hat)
-            
-            # 1. Topological Unlinking Trigger (t_c)
-            Lk = compute_linking_number(sim.grid, sim.fft, sim.A_hat, B_hat, calib_factor=calib_factor)
-            
-            # Reconnection onset defined as the topological breaking of the links (Lk drops below 0.5)
+
+            # Pass Phi0 (initial flux) explicitly — physically correct for t > 0
+            Lk = compute_linking_number(sim.grid, sim.fft, sim.A_hat, B_hat,
+                                        Phi=Phi0, calib_factor=calib_factor)
+
             if t_c is None and Lk < 0.5:
                 t_c = time_now
                 print(f"[*] TOPOLOGICAL UNLINKING DETECTED at t_c = {t_c:.3f} (Step {step})")
-            
-            # 2. Point Cloud Extraction (Shape Operator of Current Sheets)
-            # threshold = 0.6 isolates the high-intensity reconnecting current sheets
-            pc = eng.extract_point_cloud(sim.grid, sim.fft, J_hat[0], J_hat[1], J_hat[2], threshold=0.6)
-            
+
+            pc = eng.extract_point_cloud(sim.grid, sim.fft,
+                                          J_hat[0], J_hat[1], J_hat[2], threshold=0.6)
             point_clouds.append(pc)
             time_series.append(time_now)
-            
+
             print(f"Step {step:03d} | t={time_now:.3f} | Lk: {Lk:.3f} | PC size: {len(pc)}")
 
         # Step physics via ETDRK4
@@ -111,11 +106,19 @@ def main():
         if run_key in status and status[run_key].get("completed", False):
             print(f"Skipping {run_key}, already completed.")
             continue
-            
-        t_c = run_single_simulation(i, etas[i], a_cores[i], N=128, steps=200, diag_interval=5, out_dir=out_dir)
-        
-        # Update and write status log
-        status[run_key] = {"completed": True, "t_c": t_c, "eta": etas[i], "a_core": a_cores[i]}
+
+        # Runs that previously did not reconnect within t=1.0 (200 steps) are
+        # almost certainly low-eta cases on longer reconnection timescales.
+        # Extend to 600 steps (t_max=3.0) to capture Sweet-Parker scaling.
+        prior_t_c = status.get(run_key, {}).get("t_c", None)
+        n_steps = 600 if (prior_t_c is None or prior_t_c < 0) else 200
+
+        t_c = run_single_simulation(i, etas[i], a_cores[i],
+                                     N=128, steps=n_steps,
+                                     diag_interval=5, out_dir=out_dir)
+
+        status[run_key] = {"completed": True, "t_c": t_c,
+                           "eta": float(etas[i]), "a_core": float(a_cores[i])}
         with open(status_file, "w") as f:
             json.dump(status, f, indent=4)
 

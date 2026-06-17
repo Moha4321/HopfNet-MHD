@@ -167,8 +167,6 @@ PYBIND11_MODULE(hopfnet_cpp, m) {
             std::memcpy(a.mutable_data(),c.f3.data(),c.f3.size()*sizeof(double));
             return a; }, py::arg("grid"));
 
-#include "null_finder.hpp"
-
     // ================================================================
     // Milestone 9: Haynes-Parnell Magnetic Null Finder
     // ================================================================
