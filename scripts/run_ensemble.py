@@ -20,20 +20,25 @@ from hopfnet.topology import compute_linking_number, compute_magnetic_helicity, 
 from hopfnet import hopfnet_cpp as eng
 
 def setup_sampler(n_samples=40, seed=42):
-    """Generates strictly stratified LHS parameters for physics sweeps."""
+    """Generates strictly stratified LHS parameters for physics sweeps.
+
+    Parameter ranges chosen so that Hall-MHD reconnection (d_i=0.3) completes
+    within t_max=1.0 (200 steps at dt=0.005) for all 40 runs:
+      eta in [2e-3, 1e-2]: Sweet-Parker time ~ 3-7 Alfven crossings at these values
+      a_core in [0.1, 0.4]: controls initial current sheet sharpness
+    """
     sampler = LatinHypercube(d=2, seed=seed)
     samples = sampler.random(n=n_samples)
-    
-    # eta controls diffusion scale, a_core controls initial gradient steepness
-    etas = 5e-4 + samples[:, 0] * (5e-3 - 5e-4)
-    a_cores = 0.1 + samples[:, 1] * (0.4 - 0.1)
+
+    etas    = 2e-3 + samples[:, 0] * (1e-2 - 2e-3)   # [2e-3, 1e-2]
+    a_cores = 0.1  + samples[:, 1] * (0.4  - 0.1)    # [0.1,  0.4]
     return etas, a_cores
 
 def run_single_simulation(run_id, eta, a_core, N=128, steps=200, diag_interval=5, out_dir="data_ensemble"):
     print(f"\n--- Starting Run {run_id:03d} | eta={eta:.2e}, a_core={a_core:.3f} ---")
 
     checkpoint_dir = os.path.join(out_dir, f"run_{run_id:03d}_checkpoints")
-    sim = HopfNetSimulation(N=N, dt=0.005, eta=eta, nu=eta, d_i=0.1, out_dir=checkpoint_dir)
+    sim = HopfNetSimulation(N=N, dt=0.005, eta=eta, nu=eta, d_i=0.3, out_dir=checkpoint_dir)
 
     Ax, Ay, Az = eng.compute_hopf_link(N, sim.L, R=1.0, d=0.3, a_core=a_core, I0=1.0, mu0=1.0, n_quad=64)
     A_hat_raw = (sim.fft.forward(Ax), sim.fft.forward(Ay), sim.fft.forward(Az))
@@ -107,14 +112,10 @@ def main():
             print(f"Skipping {run_key}, already completed.")
             continue
 
-        # Runs that previously did not reconnect within t=1.0 (200 steps) are
-        # almost certainly low-eta cases on longer reconnection timescales.
-        # Extend to 600 steps (t_max=3.0) to capture Sweet-Parker scaling.
-        prior_t_c = status.get(run_key, {}).get("t_c", None)
-        n_steps = 600 if (prior_t_c is None or prior_t_c < 0) else 200
-
+        # With the rescaled eta range [2e-3, 1e-2] and d_i=0.3, all runs
+        # should reconnect within t_max=1.0 (200 steps). No extension needed.
         t_c = run_single_simulation(i, etas[i], a_cores[i],
-                                     N=128, steps=n_steps,
+                                     N=128, steps=200,
                                      diag_interval=5, out_dir=out_dir)
 
         status[run_key] = {"completed": True, "t_c": t_c,

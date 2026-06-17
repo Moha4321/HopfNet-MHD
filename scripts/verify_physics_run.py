@@ -25,15 +25,15 @@ from hopfnet import hopfnet_cpp as eng
 def run_verification():
     print("=" * 60)
     print(" PHASE 2 PHYSICS VERIFICATION RUN (128^3)")
-    print(" eta=5e-4, a_core=0.15, t_max=2.0 (400 steps)")
+    print(" eta=2e-3, d_i=0.3, a_core=0.15, t_max=2.0 (400 steps)")
     print("=" * 60)
 
     N = 128
     out_dir = "verify_physics_out"
     os.makedirs(out_dir, exist_ok=True)
 
-    sim = HopfNetSimulation(N=N, dt=0.005, eta=5e-4, nu=5e-4,
-                            d_i=0.1, out_dir=out_dir)
+    sim = HopfNetSimulation(N=N, dt=0.005, eta=2e-3, nu=2e-3,
+                            d_i=0.3, out_dir=out_dir)
 
     # Override a_core
     Ax, Ay, Az = eng.compute_hopf_link(N, sim.L, R=1.0, d=0.3, a_core=0.15,
